@@ -17,13 +17,11 @@ jobs:
           script: |
             const pr = context.payload.pull_request;
             const m = (pr.body || pr.title || "").match(/issue\s+#(\d+)/i);
-            if (!m) {
-              return;
-            }
+            if (!m) return;
             const issue_number = parseInt(m[1], 10);
             await github.rest.issues.createComment({
               ...context.repo, issue_number,
-              body: `Ingested ✅ via ${pr.merge_commit_sha}. Thanks!`
+              body: `Ingested ✅ via ${pr.merge_commit_sha}.`
             });
             await github.rest.issues.addLabels({
               ...context.repo, issue_number, labels: ['ingested']
