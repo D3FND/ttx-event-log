@@ -1,1 +1,105 @@
+name: "Add Event"
+description: "Propose a new event for the TTX event log (no secrets/PII)."
+title: "[Event] <concise summary>"
+labels: ["event", "needs-validation"]
+body:
+  - type: input
+    id: ts
+    attributes:
+      label: Timestamp (UTC ISO 8601)
+      placeholder: "2025-09-20T01:50:00Z"
+    validations: { required: true }
 
+  - type: input
+    id: speaker
+    attributes:
+      label: Speaker/Role
+      placeholder: "Blue Cell (IR Lead) / Red Cell / White Cell / Tooling"
+    validations: { required: true }
+
+  - type: textarea
+    id: observation
+    attributes:
+      label: Decision/Observation
+      description: "What happened? One clear sentence."
+    validations: { required: true }
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence Reference
+      description: "E.g., CloudTrail eventName/IP, Windows Event ID, URL, sanitized log line."
+    validations: { required: true }
+
+  - type: textarea
+    id: action
+    attributes:
+      label: Action Item
+      description: "Concrete follow-up (investigate, contain, notify, etc.)"
+    validations: { required: true }
+
+  - type: input
+    id: owner
+    attributes:
+      label: Owner
+      placeholder: "Ops-OnCall / Blue-IR / Red-OpFor / White-Controller"
+    validations: { required: true }
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source / Log Type
+      options:
+        - CloudTrail
+        - Windows Event Log
+        - Azure Activity Log
+        - Defender for Endpoint
+        - Sysmon
+        - Custom
+    validations: { required: true }
+
+  - type: dropdown
+    id: cell
+    attributes:
+      label: Team / Cell
+      options: [Blue, Red, White, Green]
+    validations: { required: true }
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Incident Phase
+      options:
+        - Detect
+        - Analyze
+        - Contain
+        - Eradicate
+        - Recover
+        - Lessons Learned
+    validations: { required: true }
+
+  - type: input
+    id: severity
+    attributes:
+      label: Severity (optional)
+      placeholder: "low | medium | high | critical"
+
+  - type: input
+    id: cve
+    attributes:
+      label: CVE / TTP / Actor (optional)
+      placeholder: "CVE-2024-3400; T1078; APT29"
+
+  - type: input
+    id: service
+    attributes:
+      label: System / Service (optional)
+      placeholder: "aws-ec2 / okta / gmail / gsuite / azure-ad"
+
+  - type: checkboxes
+    id: attest
+    attributes:
+      label: Attestations
+      options:
+        - label: "This submission contains no secrets, PII, or live tenant identifiers."
+          required: true
