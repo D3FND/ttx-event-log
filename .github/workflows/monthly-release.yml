@@ -1,17 +1,24 @@
 name: Monthly Release Snapshot
+
 on:
   schedule: [{ cron: "10 0 1 * *" }]
+
 permissions:
   contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - id: date
+        run: echo "m=$(date -u +%Y-%m)" >> $GITHUB_OUTPUT
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: TTX-${{ steps.date.outputs.m }}
+          name: "TTX-${{ steps.date.outputs.m }}"
+          body: "Monthly snapshot for TTX-${{ steps.date.outputs.m }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - id: date
-        run: echo "m=$(date -u +%Y-%m)" >> $GITHUB_OUTPUT
