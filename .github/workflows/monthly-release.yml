@@ -1,0 +1,17 @@
+name: Monthly Release
+on:
+  schedule: [{ cron: "10 0 1 * *" }]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag & release
+        env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
+        run: |
+          TAG="TTX-$(date -u +%Y-%m)"
+          git tag -f "$TAG" || true
+          git push -f origin "$TAG" || true
+          gh release delete "$TAG" -y || true
+          gh release create "$TAG" --notes "Monthly snapshot for $TAG"
