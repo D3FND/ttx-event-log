@@ -14,32 +14,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Bail if not an "event" issue yet
-        id: gate
+      # Gate softly: exit if the 'event' label isn't on the issue yet
+      - name: Require 'event' label
         run: |
-          echo "labels=${{ toJson(github.event.issue.labels.*.name) }}" >> $GITHUB_OUTPUT
+          echo "Labels: ${{ toJson(github.event.issue.labels.*.name) }}"
           if [[ "${{ contains(github.event.issue.labels.*.name, 'event') }}" != "true" ]]; then
-            echo "Not an 'event' issue yet (or labels not applied). Exiting gracefully."
+            echo "Not an 'event' issue (yet). Exiting."
             exit 0
           fi
 
       - uses: actions/checkout@v4
 
-      - name: Ensure data dir and header exist
+      - name: Ensure data dir + header
         run: |
           mkdir -p data
           if [ ! -f data/event_log_template.csv ]; then
             echo 'Timestamp,Speaker/Role,Decision/Observation,Evidence Reference,Action Item,Owner,Tags' > data/event_log_template.csv
           fi
 
-      - name: Extract form fields & build labels + CSV row
+      - name: Extract fields → labels + CSV row
         id: extract
         uses: actions/github-script@v7
         with:
           script: |
             const body = context.payload.issue.body || "";
 
-            // Robust block-grabber for Issue Forms (### Heading\n\nValue)
             function grab(label){
               const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
               const rx = new RegExp(`^###\\s+${esc}\\s*[\\r\\n]+([\\s\\S]*?)(?:\\r?\\n(?=###\\s)|$)`, 'm');
@@ -60,7 +59,6 @@ jobs:
             const cve        = grab('CVE / TTP / Actor \\(optional\\)');
             const service    = grab('System / Service \\(optional\\)');
 
-            // Build labels
             const labels = [
               `source:${(source||'custom').toLowerCase().replace(/\s+/g,'-')}`,
               `cell:${(cell||'blue').toLowerCase()}`,
@@ -74,44 +72,31 @@ jobs:
             });
             if (service) labels.push(`service:${service.toLowerCase().replace(/\s+/g,'-')}`);
 
-            // Apply labels (idempotent)
+            // idempotent
             await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels }).catch(()=>{});
 
-            // Escape CSV
             const esc = s => `"${String(s||'').replace(/"/g,'""')}"`;
-            const tags = labels.join(';');
-            const row = [ts, speaker, observation, evidence, action, owner, tags].map(esc).join(',');
-
+            const row = [ts, speaker, observation, evidence, action, owner, labels.join(';')].map(esc).join(',');
             core.setOutput('row', row);
 
-      - name: Validate fields
+      - name: Validate + append + sort
         run: |
           printf %s "${{ steps.extract.outputs.row }}" > /tmp/newrow.csv
           python - << 'PY'
-import csv, re, sys
-row = next(csv.reader(open('/tmp/newrow.csv')))
-if len(row) != 7:
-    raise SystemExit(f"Expected 7 columns, got {len(row)}")
-ts, speaker, obs, ev, act, owner, tags = row
+import csv,re
+r = next(csv.reader(open('/tmp/newrow.csv')))
+assert len(r)==7, f"expected 7 cols, got {len(r)}"
 iso = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
-if not iso.match(ts):
-    raise SystemExit(f"Bad timestamp: {ts}")
-for name, val in [('Speaker/Role',speaker),('Decision/Observation',obs),
-                  ('Evidence Reference',ev),('Action Item',act),('Owner',owner)]:
-    if not val.strip('"').strip():
-        raise SystemExit(f"Missing required field: {name}")
-print("Validation OK")
+assert iso.match(r[0]), f"bad timestamp: {r[0]}"
+for i,name in enumerate(["Speaker/Role","Decision/Observation","Evidence Reference","Action Item","Owner"], start=1):
+    assert r[i].strip('"').strip(), f"missing field: {name}"
+print("OK")
 PY
-
-      - name: Append row and sort by Timestamp
-        run: |
           printf '%s\n' "${{ steps.extract.outputs.row }}" >> data/event_log_template.csv
-          # Keep header, sort remaining rows by column 1 (Timestamp)
           { head -n1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort -t, -k1,1; } > data/_tmp.csv
           mv data/_tmp.csv data/event_log_template.csv
 
-      # Use a stable PR creator instead of 'gh pr create'
-      - name: Create Pull Request
+      - name: Open PR
         id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
@@ -120,15 +105,3 @@ PY
           body: "Automated ingest from issue #${{ github.event.issue.number }}"
           branch: "bot/add-event-${{ github.event.issue.number }}"
           labels: ingest
-
-      - name: Comment with PR link
-        if: steps.cpr.outputs.pull-request-url != ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const url = '${{ steps.cpr.outputs.pull-request-url }}';
-            await github.rest.issues.createComment({
-              ...context.repo,
-              issue_number: context.issue.number,
-              body: `Created PR for ingestion: ${url}`
-            });
