@@ -11,19 +11,9 @@ permissions:
 
 jobs:
   ingest:
-    # <-- This prevents the job from running on pushes that only change this file
     if: ${{ github.event_name == 'issues' }}
     runs-on: ubuntu-latest
-
     steps:
-      - name: Require 'event' label
-        run: |
-          echo "Labels: ${{ toJson(github.event.issue.labels.*.name) }}"
-          if [[ "${{ contains(github.event.issue.labels.*.name, 'event') }}" != "true" ]]; then
-            echo "Not an 'event' issue (yet). Exiting."
-            exit 0
-          fi
-
       - uses: actions/checkout@v4
 
       - name: Ensure data dir + header
@@ -38,13 +28,17 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const body = context.payload.issue.body || "";
-            function grab(label){
+            const body = context.payload.issue?.body || "";
+
+            // Helper to pull Issue Form sections rendered as:
+            // ### <Label>\n\n<Value>\n
+            function grab(label) {
               const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              const rx = new RegExp(`^###\\s+${esc}\\s*[\\r\\n]+([\\s\\S]*?)(?:\\r?\\n(?=###\\s)|$)`, 'm');
-              const m = body.match(rx);
+              const rx  = new RegExp(`^###\\s+${esc}\\s*[\\r\\n]+([\\s\\S]*?)(?:\\r?\\n(?=###\\s)|$)`, 'm');
+              const m   = body.match(rx);
               return m ? m[1].trim() : '';
             }
+
             const ts         = grab('Timestamp \\(UTC ISO 8601\\)');
             const speaker    = grab('Speaker/Role');
             const observation= grab('Decision/Observation');
@@ -58,37 +52,44 @@ jobs:
             const cve        = grab('CVE / TTP / Actor \\(optional\\)');
             const service    = grab('System / Service \\(optional\\)');
 
+            // Build labels
             const labels = [
               `source:${(source||'custom').toLowerCase().replace(/\s+/g,'-')}`,
               `cell:${(cell||'blue').toLowerCase()}`,
               `phase:${(phase||'detect').toLowerCase()}`
             ];
             if (severity) labels.push(`sev:${severity.toLowerCase()}`);
-            if (cve) cve.split(/[;,]/).map(s=>s.trim()).filter(Boolean).forEach(v=>{
-              if (/^CVE-\d{4}-\d+$/i.test(v)) labels.push(`cve:${v.toUpperCase()}`);
-              else if (/^T\d{4}/i.test(v))    labels.push(`ttp:${v.toUpperCase()}`);
-              else                             labels.push(`actor:${v.replace(/\s+/g,'-').toLowerCase()}`);
-            });
+            if (cve) {
+              cve.split(/[;,]/).map(s=>s.trim()).filter(Boolean).forEach(v=>{
+                if (/^CVE-\d{4}-\d+$/i.test(v)) labels.push(`cve:${v.toUpperCase()}`);
+                else if (/^T\d{4}/i.test(v))    labels.push(`ttp:${v.toUpperCase()}`);
+                else                             labels.push(`actor:${v.replace(/\s+/g,'-').toLowerCase()}`);
+              });
+            }
             if (service) labels.push(`service:${service.toLowerCase().replace(/\s+/g,'-')}`);
 
-            await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels }).catch(()=>{});
+            // Apply labels (idempotent)
+            try {
+              await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels });
+            } catch (e) { /* no-op */ }
 
             const esc = s => `"${String(s||'').replace(/"/g,'""')}"`;
             const row = [ts, speaker, observation, evidence, action, owner, labels.join(';')].map(esc).join(',');
+
             core.setOutput('row', row);
 
       - name: Validate + append + sort
         run: |
           printf %s "${{ steps.extract.outputs.row }}" > /tmp/newrow.csv
           python - << 'PY'
-import csv,re
-r = next(csv.reader(open('/tmp/newrow.csv')))
-assert len(r)==7, f"expected 7 cols, got {len(r)}"
+import csv, re
+row = next(csv.reader(open('/tmp/newrow.csv')))
+assert len(row) == 7, f"expected 7 cols, got {len(row)}"
 iso = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
-assert iso.match(r[0]), f"bad timestamp: {r[0]}"
-for i,name in enumerate(["Speaker/Role","Decision/Observation","Evidence Reference","Action Item","Owner"], start=1):
-    assert r[i].strip('"').strip(), f"missing field: {name}"
-print("OK")
+assert iso.match(row[0]), f"bad timestamp: {row[0]}"
+for idx, name in enumerate(["Speaker/Role","Decision/Observation","Evidence Reference","Action Item","Owner"], start=1):
+    assert row[idx].strip('"').strip(), f"missing field: {name}"
+print("Validation OK")
 PY
           printf '%s\n' "${{ steps.extract.outputs.row }}" >> data/event_log_template.csv
           { head -n1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort -t, -k1,1; } > data/_tmp.csv
