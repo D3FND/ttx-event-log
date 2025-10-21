@@ -11,10 +11,11 @@ permissions:
 
 jobs:
   ingest:
+    # <-- This prevents the job from running on pushes that only change this file
+    if: ${{ github.event_name == 'issues' }}
     runs-on: ubuntu-latest
 
     steps:
-      # Gate softly: exit if the 'event' label isn't on the issue yet
       - name: Require 'event' label
         run: |
           echo "Labels: ${{ toJson(github.event.issue.labels.*.name) }}"
@@ -38,14 +39,12 @@ jobs:
         with:
           script: |
             const body = context.payload.issue.body || "";
-
             function grab(label){
               const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
               const rx = new RegExp(`^###\\s+${esc}\\s*[\\r\\n]+([\\s\\S]*?)(?:\\r?\\n(?=###\\s)|$)`, 'm');
               const m = body.match(rx);
               return m ? m[1].trim() : '';
             }
-
             const ts         = grab('Timestamp \\(UTC ISO 8601\\)');
             const speaker    = grab('Speaker/Role');
             const observation= grab('Decision/Observation');
@@ -72,7 +71,6 @@ jobs:
             });
             if (service) labels.push(`service:${service.toLowerCase().replace(/\s+/g,'-')}`);
 
-            // idempotent
             await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels }).catch(()=>{});
 
             const esc = s => `"${String(s||'').replace(/"/g,'""')}"`;
