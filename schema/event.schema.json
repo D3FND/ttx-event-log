@@ -1,1 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TTX Event",
+  "type": "object",
+  "properties": {
+    "Timestamp": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "Speaker/Role": { "type": "string", "maxLength": 120 },
+    "Decision/Observation": { "type": "string", "maxLength": 800 },
+    "Evidence Reference": { "type": "string", "maxLength": 800 },
+    "Action Item": { "type": "string", "maxLength": 400 },
+    "Owner": { "type": "string", "maxLength": 120 },
+    "Tags": { "type": "string", "maxLength": 800 }
+  },
+  "required": ["Timestamp","Speaker/Role","Decision/Observation","Evidence Reference","Action Item","Owner"],
+  "additionalProperties": false
+}
 
