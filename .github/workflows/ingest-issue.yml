@@ -1,1 +1,101 @@
+name: Ingest Event Issue
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+jobs:
+  to-pr:
+    if: contains(github.event.issue.labels.*.name, 'event')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract form fields
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+            function grab(label){
+              // Matches Issue Form rendered section "### <label>" block content
+              const rx = new RegExp(`### ${label}[\\s\\S]*?\\n\\n([\\s\\S]*?)\\n(?=###|$)`, 'm');
+              const m = body.match(rx);
+              return m ? m[1].trim().replace(/\r/g,'') : '';
+            }
+            const ts = grab('Timestamp \\(UTC ISO 8601\\)');
+            const speaker = grab('Speaker/Role');
+            const observation = grab('Decision/Observation');
+            const evidence = grab('Evidence Reference');
+            const action = grab('Action Item');
+            const owner = grab('Owner');
+            const source = grab('Source / Log Type');
+            const cell = grab('Team / Cell');
+            const phase = grab('Incident Phase');
+            const severity = grab('Severity \\(optional\\)');
+            const cve = grab('CVE / TTP / Actor \\(optional\\)');
+            const service = grab('System / Service \\(optional\\)');
+
+            // Build labels
+            const labels = [
+              `source:${(source||'custom').toLowerCase().replace(/\s+/g,'-')}`,
+              `cell:${(cell||'blue').toLowerCase()}`,
+              `phase:${(phase||'detect').toLowerCase()}`
+            ];
+            if (severity) labels.push(`sev:${severity.toLowerCase()}`);
+            if (cve) cve.split(/[;,]/).map(s=>s.trim()).filter(Boolean).forEach(v=>{
+              if (/^CVE-\d{4}-\d+$/i.test(v)) labels.push(`cve:${v.toUpperCase()}`);
+              else if (/^T\d{4}/i.test(v)) labels.push(`ttp:${v.toUpperCase()}`);
+              else labels.push(`actor:${v.replace(/\s+/g,'-').toLowerCase()}`);
+            });
+            if (service) labels.push(`service:${service.toLowerCase().replace(/\s+/g,'-')}`);
+
+            // Apply labels
+            await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels });
+
+            // Build CSV row
+            const esc = (s)=> `"${(s||'').replace(/"/g,'""')}"`;
+            const tags = labels.join(';');
+            const row = [ts, speaker, observation, evidence, action, owner, tags].map(esc).join(',');
+
+            core.setOutput('row', row);
+
+      - name: Basic validation (ISO timestamp + required fields)
+        id: validate
+        run: |
+          echo "${{ steps.extract.outputs.row }}" > /tmp/newrow.csv
+          # super-basic checks; you can replace with python validator script if desired
+          python - << 'PY'
+import sys,re,csv
+row = next(csv.reader(open('/tmp/newrow.csv')))
+ts,speaker,obs,ev,act,owner,tags = row
+iso = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+assert iso.match(ts), f"Bad timestamp: {ts}"
+for i,field in enumerate([speaker,obs,ev,act,owner], start=1):
+    assert field.strip('"').strip(), f"Missing required field at col {i+1}"
+print("OK")
+PY
+
+      - name: Append to CSV (rolling ledger)
+        run: |
+          echo $'${{ steps.extract.outputs.row }}' >> data/event_log_template.csv
+          # Sort by Timestamp ascending (keep header)
+          (head -n 1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort) > data/_tmp.csv
+          mv data/_tmp.csv data/event_log_template.csv
+
+      - name: Create branch and PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BR=bot/add-event-${{ github.event.issue.number }}
+          git config user.name "ttx-bot"
+          git config user.email "ttx-bot@users.noreply.github.com"
+          git checkout -b "$BR"
+          git add data/event_log_template.csv
+          git commit -m "Add event from issue #${{ github.event.issue.number }}"
+          git push -u origin "$BR"
+          gh pr create --title "Ingest event #${{ github.event.issue.number }}" --body "Automated ingest from issue #${{ github.event.issue.number }}" --label "ingest"
 
