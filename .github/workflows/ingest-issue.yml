@@ -1,43 +1,64 @@
 name: Ingest Event Issue
+
 on:
   issues:
     types: [opened, edited, labeled]
 
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 jobs:
-  to-pr:
-    if: contains(github.event.issue.labels.*.name, 'event')
+  ingest:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+
     steps:
+      - name: Bail if not an "event" issue yet
+        id: gate
+        run: |
+          echo "labels=${{ toJson(github.event.issue.labels.*.name) }}" >> $GITHUB_OUTPUT
+          if [[ "${{ contains(github.event.issue.labels.*.name, 'event') }}" != "true" ]]; then
+            echo "Not an 'event' issue yet (or labels not applied). Exiting gracefully."
+            exit 0
+          fi
+
       - uses: actions/checkout@v4
 
-      - name: Extract form fields
+      - name: Ensure data dir and header exist
+        run: |
+          mkdir -p data
+          if [ ! -f data/event_log_template.csv ]; then
+            echo 'Timestamp,Speaker/Role,Decision/Observation,Evidence Reference,Action Item,Owner,Tags' > data/event_log_template.csv
+          fi
+
+      - name: Extract form fields & build labels + CSV row
         id: extract
         uses: actions/github-script@v7
         with:
           script: |
             const body = context.payload.issue.body || "";
+
+            // Robust block-grabber for Issue Forms (### Heading\n\nValue)
             function grab(label){
-              // Matches Issue Form rendered section "### <label>" block content
-              const rx = new RegExp(`### ${label}[\\s\\S]*?\\n\\n([\\s\\S]*?)\\n(?=###|$)`, 'm');
+              const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const rx = new RegExp(`^###\\s+${esc}\\s*[\\r\\n]+([\\s\\S]*?)(?:\\r?\\n(?=###\\s)|$)`, 'm');
               const m = body.match(rx);
-              return m ? m[1].trim().replace(/\r/g,'') : '';
+              return m ? m[1].trim() : '';
             }
-            const ts = grab('Timestamp \\(UTC ISO 8601\\)');
-            const speaker = grab('Speaker/Role');
-            const observation = grab('Decision/Observation');
-            const evidence = grab('Evidence Reference');
-            const action = grab('Action Item');
-            const owner = grab('Owner');
-            const source = grab('Source / Log Type');
-            const cell = grab('Team / Cell');
-            const phase = grab('Incident Phase');
-            const severity = grab('Severity \\(optional\\)');
-            const cve = grab('CVE / TTP / Actor \\(optional\\)');
-            const service = grab('System / Service \\(optional\\)');
+
+            const ts         = grab('Timestamp \\(UTC ISO 8601\\)');
+            const speaker    = grab('Speaker/Role');
+            const observation= grab('Decision/Observation');
+            const evidence   = grab('Evidence Reference');
+            const action     = grab('Action Item');
+            const owner      = grab('Owner');
+            const source     = grab('Source / Log Type');
+            const cell       = grab('Team / Cell');
+            const phase      = grab('Incident Phase');
+            const severity   = grab('Severity \\(optional\\)');
+            const cve        = grab('CVE / TTP / Actor \\(optional\\)');
+            const service    = grab('System / Service \\(optional\\)');
 
             // Build labels
             const labels = [
@@ -48,54 +69,66 @@ jobs:
             if (severity) labels.push(`sev:${severity.toLowerCase()}`);
             if (cve) cve.split(/[;,]/).map(s=>s.trim()).filter(Boolean).forEach(v=>{
               if (/^CVE-\d{4}-\d+$/i.test(v)) labels.push(`cve:${v.toUpperCase()}`);
-              else if (/^T\d{4}/i.test(v)) labels.push(`ttp:${v.toUpperCase()}`);
-              else labels.push(`actor:${v.replace(/\s+/g,'-').toLowerCase()}`);
+              else if (/^T\d{4}/i.test(v))    labels.push(`ttp:${v.toUpperCase()}`);
+              else                             labels.push(`actor:${v.replace(/\s+/g,'-').toLowerCase()}`);
             });
             if (service) labels.push(`service:${service.toLowerCase().replace(/\s+/g,'-')}`);
 
-            // Apply labels
-            await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels });
+            // Apply labels (idempotent)
+            await github.rest.issues.addLabels({ ...context.repo, issue_number: context.issue.number, labels }).catch(()=>{});
 
-            // Build CSV row
-            const esc = (s)=> `"${(s||'').replace(/"/g,'""')}"`;
+            // Escape CSV
+            const esc = s => `"${String(s||'').replace(/"/g,'""')}"`;
             const tags = labels.join(';');
             const row = [ts, speaker, observation, evidence, action, owner, tags].map(esc).join(',');
 
             core.setOutput('row', row);
 
-      - name: Basic validation (ISO timestamp + required fields)
-        id: validate
+      - name: Validate fields
         run: |
-          echo "${{ steps.extract.outputs.row }}" > /tmp/newrow.csv
-          # super-basic checks; you can replace with python validator script if desired
+          printf %s "${{ steps.extract.outputs.row }}" > /tmp/newrow.csv
           python - << 'PY'
-import sys,re,csv
+import csv, re, sys
 row = next(csv.reader(open('/tmp/newrow.csv')))
-ts,speaker,obs,ev,act,owner,tags = row
+if len(row) != 7:
+    raise SystemExit(f"Expected 7 columns, got {len(row)}")
+ts, speaker, obs, ev, act, owner, tags = row
 iso = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
-assert iso.match(ts), f"Bad timestamp: {ts}"
-for i,field in enumerate([speaker,obs,ev,act,owner], start=1):
-    assert field.strip('"').strip(), f"Missing required field at col {i+1}"
-print("OK")
+if not iso.match(ts):
+    raise SystemExit(f"Bad timestamp: {ts}")
+for name, val in [('Speaker/Role',speaker),('Decision/Observation',obs),
+                  ('Evidence Reference',ev),('Action Item',act),('Owner',owner)]:
+    if not val.strip('"').strip():
+        raise SystemExit(f"Missing required field: {name}")
+print("Validation OK")
 PY
 
-      - name: Append to CSV (rolling ledger)
+      - name: Append row and sort by Timestamp
         run: |
-          echo $'${{ steps.extract.outputs.row }}' >> data/event_log_template.csv
-          # Sort by Timestamp ascending (keep header)
-          (head -n 1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort) > data/_tmp.csv
+          printf '%s\n' "${{ steps.extract.outputs.row }}" >> data/event_log_template.csv
+          # Keep header, sort remaining rows by column 1 (Timestamp)
+          { head -n1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort -t, -k1,1; } > data/_tmp.csv
           mv data/_tmp.csv data/event_log_template.csv
 
-      - name: Create branch and PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BR=bot/add-event-${{ github.event.issue.number }}
-          git config user.name "ttx-bot"
-          git config user.email "ttx-bot@users.noreply.github.com"
-          git checkout -b "$BR"
-          git add data/event_log_template.csv
-          git commit -m "Add event from issue #${{ github.event.issue.number }}"
-          git push -u origin "$BR"
-          gh pr create --title "Ingest event #${{ github.event.issue.number }}" --body "Automated ingest from issue #${{ github.event.issue.number }}" --label "ingest"
+      # Use a stable PR creator instead of 'gh pr create'
+      - name: Create Pull Request
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Add event from issue #${{ github.event.issue.number }}"
+          title: "Ingest event #${{ github.event.issue.number }}"
+          body: "Automated ingest from issue #${{ github.event.issue.number }}"
+          branch: "bot/add-event-${{ github.event.issue.number }}"
+          labels: ingest
 
+      - name: Comment with PR link
+        if: steps.cpr.outputs.pull-request-url != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.cpr.outputs.pull-request-url }}';
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `Created PR for ingestion: ${url}`
+            });
