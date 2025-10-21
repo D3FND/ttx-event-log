@@ -1,14 +1,90 @@
-name: Ingest Event Issue (smoke)
+name: Ingest Event Issue
 
 on:
   issues:
-    types: [opened]
+    types: [opened, labeled, edited]
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  smoke:
+  ingest:
+    if: ${{ github.event_name == 'issues' }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "ingest workflow YAML is valid"
+      - name: Require 'event' label
+        run: |
+          if [[ "${{ contains(github.event.issue.labels.*.name, 'event') }}" != "true" ]]; then
+            echo "Not an 'event' issue. Exiting."
+            exit 0
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Ensure data dir + header
+        run: |
+          mkdir -p data
+          if [ ! -f data/event_log_template.csv ]; then
+            echo 'Timestamp,Speaker/Role,Decision/Observation,Evidence Reference,Action Item,Owner,Tags' > data/event_log_template.csv
+          fi
+
+      - name: Extract fields from issue body and append row
+        env:
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          # Grab a section rendered by Issue Forms like:
+          # ### Label\n\nValue\n
+          grab() { printf '%s' "$BODY" | awk -v RS= -v FS='\n\n' -v H="### $1" '$0 ~ H { sub(".*\n\n",""); gsub(/\r/,""); print; exit }'; }
+          TS="$(grab 'Timestamp (UTC ISO 8601)')"
+          SPK="$(grab 'Speaker/Role')"
+          OBS="$(grab 'Decision/Observation')"
+          EVI="$(grab 'Evidence Reference')"
+          ACT="$(grab 'Action Item')"
+          OWN="$(grab 'Owner')"
+          SRC="$(grab 'Source / Log Type')"
+          CELL="$(grab 'Team / Cell')"
+          PHS="$(grab 'Incident Phase')"
+          SEV="$(grab 'Severity (optional)')"
+          CVE="$(grab 'CVE / TTP / Actor (optional)')"
+          SVC="$(grab 'System / Service (optional)')"
+
+          # Basic ISO validation + requireds
+          echo "$TS" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || { echo "Bad timestamp: $TS"; exit 1; }
+          for fld in "$SPK" "$OBS" "$EVI" "$ACT" "$OWN"; do [ -n "$fld" ] || { echo "Missing required field"; exit 1; }; done
+
+          # Build tags
+          tagify() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' ; }
+          TAGS="source:$(tagify "${SRC:-custom}");cell:$(tagify "${CELL:-blue}");phase:$(tagify "${PHS:-detect}")"
+          [ -n "$SEV" ] && TAGS="$TAGS;sev:$(tagify "$SEV")"
+          if [ -n "$CVE" ]; then
+            IFS=',;'
+            for v in $CVE; do
+              v=$(echo "$v" | xargs)
+              case "$v" in
+                CVE-*) TAGS="$TAGS;cve:$v" ;;
+                T[0-9][0-9][0-9][0-9]*) TAGS="$TAGS;ttp:$v" ;;
+                *) [ -n "$v" ] && TAGS="$TAGS;actor:$(tagify "$v")" ;;
+              esac
+            done
+          fi
+          [ -n "$SVC" ] && TAGS="$TAGS;service:$(tagify "$SVC")"
+
+          # CSV escape
+          esc() { printf '"%s"' "$(echo "${1:-}" | sed 's/"/""/g')"; }
+          ROW="$(esc "$TS"),$(esc "$SPK"),$(esc "$OBS"),$(esc "$EVI"),$(esc "$ACT"),$(esc "$OWN"),$(esc "$TAGS")"
+
+          # Append + sort by Timestamp
+          echo "$ROW" >> data/event_log_template.csv
+          { head -n1 data/event_log_template.csv && tail -n +2 data/event_log_template.csv | sort -t, -k1,1; } > data/_tmp.csv
+          mv data/_tmp.csv data/event_log_template.csv
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Add event from issue #${{ github.event.issue.number }}"
+          title: "Ingest event #${{ github.event.issue.number }}"
+          body: "Automated ingest from issue #${{ github.event.issue.number }}"
+          branch: "bot/add-event-${{ github.event.issue.number }}"
+          labels: ingest
