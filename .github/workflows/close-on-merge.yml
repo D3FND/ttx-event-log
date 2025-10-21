@@ -1,20 +1,25 @@
 name: Close Source Issue On PR Merge
+
 on:
   pull_request:
     types: [closed]
+
+permissions:
+  issues: write
+
 jobs:
   close:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
     steps:
       - uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            const m = (pr.body || "").match(/issue\s+#(\d+)/i);
-            if (!m) return;
+            const m = (pr.body || pr.title || "").match(/issue\s+#(\d+)/i);
+            if (!m) {
+              return;
+            }
             const issue_number = parseInt(m[1], 10);
             await github.rest.issues.createComment({
               ...context.repo, issue_number,
@@ -22,8 +27,7 @@ jobs:
             });
             await github.rest.issues.addLabels({
               ...context.repo, issue_number, labels: ['ingested']
-            });
+            }).catch(()=>{});
             await github.rest.issues.update({
               ...context.repo, issue_number, state: 'closed'
             });
-
