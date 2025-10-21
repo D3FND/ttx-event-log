@@ -1,0 +1,33 @@
+name: Monthly Rollover
+on:
+  schedule: [{ cron: "5 0 1 * *" }]
+jobs:
+  init-month:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, issues: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute month filename
+        id: dt
+        run: echo "file=data/$(date -u +%Y-%m).csv" >> $GITHUB_OUTPUT
+      - name: Ensure file exists with header
+        run: |
+          if [ ! -f "${{ steps.dt.outputs.file }}" ]; then
+            mkdir -p data
+            echo "Timestamp,Speaker/Role,Decision/Observation,Evidence Reference,Action Item,Owner,Tags" > "${{ steps.dt.outputs.file }}"
+          fi
+      - name: Create milestone + label (idempotent)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const month = new Date().toISOString().slice(0,7);
+            const label = `month:${month}`;
+            try { await github.rest.issues.createLabel({...context.repo, name: label, color: "0E8A16"}); } catch {}
+            try { await github.rest.issues.createMilestone({...context.repo, title: month}); } catch {}
+      - name: Commit
+        run: |
+          git config user.name "ttx-bot"
+          git config user.email "ttx-bot@users.noreply.github.com"
+          git add data/*.csv
+          git commit -m "Month rollover" || echo "No changes"
+          git push
