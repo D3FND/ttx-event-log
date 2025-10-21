@@ -1,5 +1,9 @@
 # TTX Event Log
 
+![Ingest](https://github.com/<you>/ttx-event-log/actions/workflows/ingest-issue.yml/badge.svg)
+![Monthly Release](https://github.com/<you>/ttx-event-log/actions/workflows/monthly-release.yml/badge.svg)
+
+
 A community-driven repository for sharing and analyzing event logs from tabletop exercises (TTX), cyber ranges, and real-world incidents.
 
 ## About
